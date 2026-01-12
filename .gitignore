@@ -3,3 +3,6 @@
 *.dll
 *.so
 *.dylib
+
+.idea
+.vscode
