@@ -23,21 +23,6 @@ type SyncLogger struct {
 	stopCh chan os.Signal
 }
 
-func (l *SyncLogger) Info(format string, args ...interface{}) {
-	l.Log(INFO, format, args...)
-}
-func (l *SyncLogger) Warn(format string, args ...interface{}) {
-	l.Log(WARNING, format, args...)
-}
-func (l *SyncLogger) Error(format string, args ...interface{}) {
-	l.Log(ERROR, format, args...)
-}
-func (l *SyncLogger) Debug(format string, args ...interface{}) {
-	l.Log(DEBUG, format, args...)
-}
-func (l *SyncLogger) Fatal(format string, args ...interface{}) {
-	l.Log(FATAL, format, args...)
-}
 func NewDefaultSyncLogger(model string) (*SyncLogger, error) {
 	if model == "" {
 		model = "default"
@@ -64,6 +49,7 @@ func NewDefaultSyncLogger(model string) (*SyncLogger, error) {
 	writer := bufio.NewWriterSize(file, logger.config.BufferSize)
 	logger.file = file
 	logger.writer = writer
+	go logger.startDaemon()
 	return logger, nil
 }
 func NewSyncLogger(model string, config map[string]interface{}) (*SyncLogger, error) {
@@ -92,9 +78,25 @@ func NewSyncLogger(model string, config map[string]interface{}) (*SyncLogger, er
 	writer := bufio.NewWriterSize(file, logger.config.BufferSize)
 	logger.file = file
 	logger.writer = writer
+	go logger.startDaemon()
 	return logger, nil
 }
 
+func (l *SyncLogger) Info(format string, args ...interface{}) {
+	l.Log(INFO, format, args...)
+}
+func (l *SyncLogger) Warn(format string, args ...interface{}) {
+	l.Log(WARNING, format, args...)
+}
+func (l *SyncLogger) Error(format string, args ...interface{}) {
+	l.Log(ERROR, format, args...)
+}
+func (l *SyncLogger) Debug(format string, args ...interface{}) {
+	l.Log(DEBUG, format, args...)
+}
+func (l *SyncLogger) Fatal(format string, args ...interface{}) {
+	l.Log(FATAL, format, args...)
+}
 func (l *SyncLogger) Log(level LogLevel, format string, args ...interface{}) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
