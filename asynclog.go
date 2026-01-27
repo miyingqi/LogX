@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -22,6 +24,7 @@ type AsyncLogger struct {
 	fileChan  chan string
 	conChan   chan string
 	stopChan  chan interface{}
+	sigStop   chan struct{} // 新增：用于停止信号监听
 }
 
 func NewDefaultAsyncLogger(model string) (*AsyncLogger, error) {
@@ -34,8 +37,9 @@ func NewDefaultAsyncLogger(model string) (*AsyncLogger, error) {
 		colors:    levelColors,
 		conWriter: bufio.NewWriterSize(os.Stdout, 4096),
 		stopCh:    make(chan interface{}),
-		fileChan:  make(chan string, 1000),
-		conChan:   make(chan string, 1000),
+		stopChan:  make(chan interface{}),
+		fileChan:  make(chan string, 5000),
+		conChan:   make(chan string, 5000),
 	}
 	err := ensureFileExists(logger.config.Dir+"/"+logger.config.FileName, 0644)
 	if err != nil {
@@ -127,13 +131,14 @@ func (l *AsyncLogger) writeToFile() {
 	defer l.wg.Done()
 	for {
 		select {
-		case <-l.stopChan:
-			// 退出前刷空缓冲区
-			l.mutex.Lock()
-			_ = l.writer.Flush()
-			l.mutex.Unlock()
-			return
-		case logEntry := <-l.fileChan:
+		case logEntry, ok := <-l.fileChan:
+			if !ok {
+				// 通道已关闭，处理剩余缓冲区内容后退出
+				l.mutex.Lock()
+				_ = l.writer.Flush()
+				l.mutex.Unlock()
+				return
+			}
 			l.mutex.Lock()
 			_, err := l.writer.WriteString(logEntry)
 			if err != nil {
@@ -150,21 +155,24 @@ func (l *AsyncLogger) writeToFile() {
 	}
 }
 
-// 优化 writeToConsole：定时刷盘 + 修复逻辑
+// 优化 writeToConsole：处理剩余日志后退出
 func (l *AsyncLogger) writeToConsole() {
 	defer l.wg.Done()
-	ticker := time.NewTicker(100 * time.Millisecond) // 每100ms强制刷盘
+
+	// 创建一个ticker用于定期刷新控制台输出
+	ticker := time.NewTicker(l.config.FlushInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-l.stopChan:
-			// 退出前刷空控制台缓冲区
-			l.conMutex.Lock()
-			_ = l.conWriter.Flush()
-			l.conMutex.Unlock()
-			return
-		case logEntry := <-l.conChan:
+		case logEntry, ok := <-l.conChan:
+			if !ok {
+				// 通道已关闭，处理剩余缓冲区内容后退出
+				l.conMutex.Lock()
+				_ = l.conWriter.Flush()
+				l.conMutex.Unlock()
+				return
+			}
 			l.conMutex.Lock()
 			_, err := l.conWriter.WriteString(logEntry)
 			if err != nil {
@@ -172,13 +180,13 @@ func (l *AsyncLogger) writeToConsole() {
 				l.conMutex.Unlock()
 				continue
 			}
-			// 控制台缓冲区80%水位时刷盘
-			if float64(l.conWriter.Buffered())/float64(4096) >= 0.8 {
+			// 控制台缓冲区80%水位时刷盘 (使用固定的4096作为控制台缓冲区大小)
+			if float64(l.conWriter.Buffered())/4096.0 >= 0.8 {
 				_ = l.conWriter.Flush()
 			}
 			l.conMutex.Unlock()
 		case <-ticker.C:
-			// 定时刷盘，避免少量日志积压
+			// 定期刷新控制台输出
 			l.conMutex.Lock()
 			_ = l.conWriter.Flush()
 			l.conMutex.Unlock()
@@ -188,8 +196,19 @@ func (l *AsyncLogger) writeToConsole() {
 
 // 新增：优雅关闭日志器
 func (l *AsyncLogger) Close() {
-	// 发送退出信号
-	close(l.stopChan)
+	// 避免重复关闭
+	select {
+	case <-l.stopChan:
+		// 已经关闭，直接返回
+		return
+	default:
+		// 继续执行关闭流程
+	}
+
+	// 关闭输入通道，通知写入协程不再接收新日志
+	close(l.fileChan)
+	close(l.conChan)
+
 	// 等待消费协程退出
 	l.wg.Wait()
 
@@ -203,8 +222,20 @@ func (l *AsyncLogger) Close() {
 	l.conMutex.Lock()
 	_ = l.conWriter.Flush()
 	l.conMutex.Unlock()
+}
 
-	// 关闭通道（可选）
-	close(l.fileChan)
-	close(l.conChan)
+// handleSignals 处理系统信号，实现自动关闭
+func (l *AsyncLogger) handleSignals() {
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case sig := <-signalChan:
+		// 收到中断信号，关闭sigStop通道触发自动关闭
+		fmt.Printf("\n[LogX] 异步日志收到退出信号：%v，准备关闭...\n", sig)
+		close(l.sigStop)
+	case <-l.sigStop:
+		// 已收到关闭信号
+		return
+	}
 }

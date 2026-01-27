@@ -53,6 +53,8 @@ const (
 	DefaultEnableColor   = true              // 默认启用控制台颜色
 	DefaultOutputFile    = true              // 默认输出到文件
 	DefaultOutputConsole = true              // 默认输出到控制台
+	DefaultFlushInterval = 5 * time.Second
+	DefaultExitSyncDelay = 200 * time.Millisecond
 )
 
 // LC 是 LoggerConfig 的配置映射，支持以下字段：
@@ -79,6 +81,7 @@ type LoggerConfig struct {
 	OutputFile    bool          `json:"output_file,omitempty"`    // 可选，默认true
 	OutputConsole bool          `json:"output_console,omitempty"` // 可选，默认true
 	FlushInterval time.Duration `json:"flush_interval,omitempty"`
+	ExitSyncDelay time.Duration `json:"exit_sync_delay,omitempty"`
 }
 
 // DefaultConfig 默认配置
@@ -93,6 +96,8 @@ func NewDefaultLoggerConfig() LoggerConfig {
 		EnableColor:   DefaultEnableColor,
 		OutputFile:    DefaultOutputFile,
 		OutputConsole: DefaultOutputConsole,
+		FlushInterval: DefaultFlushInterval,
+		ExitSyncDelay: DefaultExitSyncDelay,
 	}
 }
 

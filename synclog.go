@@ -2,40 +2,54 @@ package LogX
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
 )
 
 type SyncLogger struct {
-	config LoggerConfig
-	model  string
-	file   *os.File
-	writer *bufio.Writer
-	mutex  sync.Mutex
-	colors map[LogLevel]string
-	sigCh  chan interface{}
-	wg     sync.WaitGroup
-	stopCh chan os.Signal
+	config      LoggerConfig
+	model       string
+	file        *os.File
+	writer      *bufio.Writer
+	mutex       sync.Mutex
+	colors      map[LogLevel]string
+	sigCh       chan interface{}
+	wg          sync.WaitGroup
+	stopCh      chan os.Signal
+	autoCloseCh chan struct{}
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 func NewDefaultSyncLogger(model string) (*SyncLogger, error) {
 	if model == "" {
 		model = "default"
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	logger := &SyncLogger{
-		config: NewDefaultLoggerConfig(),
-		model:  model,
-		file:   nil,
-		writer: nil,
-		colors: levelColors,
-		sigCh:  make(chan interface{}),
-		stopCh: make(chan os.Signal, 1),
+		config:      NewDefaultLoggerConfig(),
+		model:       model,
+		file:        nil,
+		writer:      nil,
+		colors:      levelColors,
+		sigCh:       make(chan interface{}),
+		stopCh:      make(chan os.Signal, 1),
+		autoCloseCh: make(chan struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
+
+	runtime.AddCleanup(logger, func(l *SyncLogger) {
+		l.cancel() // 触发context取消
+		l.Close()  // 自动刷盘+关文件
+	}, nil)
 
 	err := ensureFileExists(logger.config.Dir+"/"+logger.config.FileName, 0644)
 	if err != nil {
@@ -49,22 +63,34 @@ func NewDefaultSyncLogger(model string) (*SyncLogger, error) {
 	writer := bufio.NewWriterSize(file, logger.config.BufferSize)
 	logger.file = file
 	logger.writer = writer
+
 	go logger.startDaemon()
+
 	return logger, nil
 }
 func NewSyncLogger(model string, config map[string]interface{}) (*SyncLogger, error) {
 	if model == "" {
 		model = "default"
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+
 	logger := &SyncLogger{
-		config: parseLoggerConfigFromJSON(config),
-		model:  model,
-		file:   nil,
-		writer: nil,
-		colors: levelColors,
-		sigCh:  make(chan interface{}),
-		stopCh: make(chan os.Signal, 1),
+		config:      parseLoggerConfigFromJSON(config),
+		model:       model,
+		file:        nil,
+		writer:      nil,
+		colors:      levelColors,
+		sigCh:       make(chan interface{}),
+		stopCh:      make(chan os.Signal, 1),
+		autoCloseCh: make(chan struct{}), // 初始化自动关闭通道
+		ctx:         ctx,
+		cancel:      cancel,
 	}
+
+	runtime.AddCleanup(logger, func(l *SyncLogger) {
+		l.cancel()
+		l.Close()
+	}, nil)
 
 	err := ensureFileExists(logger.config.Dir+"/"+logger.config.FileName, 0644)
 	if err != nil {
@@ -78,6 +104,7 @@ func NewSyncLogger(model string, config map[string]interface{}) (*SyncLogger, er
 	writer := bufio.NewWriterSize(file, logger.config.BufferSize)
 	logger.file = file
 	logger.writer = writer
+
 	go logger.startDaemon()
 	return logger, nil
 }
@@ -98,57 +125,56 @@ func (l *SyncLogger) Fatal(format string, args ...interface{}) {
 	l.Log(FATAL, format, args...)
 }
 func (l *SyncLogger) Log(level LogLevel, format string, args ...interface{}) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-	l.writeToConsole(level, format, args...)
-	l.writeToFile(level, format, args...)
-}
-
-func (l *SyncLogger) writeToConsole(level LogLevel, format string, args ...interface{}) {
 	if !(level >= l.config.Level) {
 		return
 	}
+
+	// 先写入控制台
 	if l.config.OutputConsole {
 		logEntry := l.formatLogColorEntry(level, format, args...)
 		_, err := os.Stdout.WriteString(logEntry)
 		if err != nil {
-			return
+			fmt.Printf("控制台写入失败：%v\n", err)
 		}
-
 	}
 
-}
-func (l *SyncLogger) writeToFile(level LogLevel, format string, args ...interface{}) {
-	if !(level >= l.config.Level) {
-		return
-	}
+	// 再写入文件
 	if l.config.OutputFile {
 		logEntry := l.formatLogEntry(level, format, args...)
 		lnLog := len(logEntry)
+
+		l.mutex.Lock()
+		defer l.mutex.Unlock() // FIX: 统一用defer释放锁，避免锁泄漏
+
 		if lnLog >= 2*l.config.BufferSize {
 			_ = l.writer.Flush()
 			_, err := l.writer.WriteString(logEntry)
 			if err != nil {
-				log.Println("error flushing log buffer: %v", err)
+				log.Printf("[LogX] 大日志写入失败：%v，执行刷盘", err)
+				l.Sync()
+				return
+			}
+		} else {
+			_, err := l.writer.WriteString(logEntry)
+			if err != nil {
+				_ = l.writer.Flush()
+				log.Printf("[LogX] 日志写入失败：%v，执行刷盘", err)
+				l.Sync()
 				return
 			}
 
-		}
-		_, err := l.writer.WriteString(logEntry)
-		if err != nil {
-			_ = l.writer.Flush()
-			log.Println("error flushing log buffer: %v", err)
-			return
-		}
-		if float64(l.writer.Buffered()/l.config.BufferSize) >= 0.8 {
-			err = l.writer.Flush()
-			if err != nil {
-				log.Println("error flushing log buffer: %v", err)
-				return
+			// 水位刷盘（保留你的逻辑）
+			buffered := l.writer.Buffered()
+			threshold := int(float64(l.config.BufferSize) * 0.8)
+			if buffered >= threshold {
+				err = l.writer.Flush()
+				if err != nil {
+					log.Printf("[LogX] 水位刷盘失败：%v", err)
+					return
+				}
 			}
 		}
 	}
-
 }
 
 func (l *SyncLogger) formatLogEntry(level LogLevel, format string, args ...interface{}) string {
@@ -212,34 +238,56 @@ func (l *SyncLogger) SetMaxFileSize(maxFileSize int64) {
 	l.config.MaxFileSize = maxFileSize
 }
 
-// 启动守护协程（仅处理退出信号）
+// 启动守护协程（处理退出信号和自动关闭）
 func (l *SyncLogger) startDaemon() {
-	// 注册系统退出信号（SIGINT/Ctrl+C、SIGTERM/kill）
-	signalChan := make(chan os.Signal, 1)
+	signalChan := make(chan os.Signal, 3)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	defer signal.Stop(signalChan)
+	defer close(signalChan)
 
-	// 启动唯一的守护协程（仅处理退出信号）
+	flushInterval := l.config.FlushInterval
+	if flushInterval <= 0 {
+		flushInterval = 5 * time.Second
+	}
+	flushTicker := time.NewTicker(flushInterval)
+	defer flushTicker.Stop()
+
 	l.wg.Add(1)
 	go func() {
-		defer l.wg.Done()
+		defer l.wg.Done() // 协程退出释放wg
 		defer func() {
-			// Panic兜底：捕获崩溃，执行最后一次刷盘
 			if r := recover(); r != nil {
-				fmt.Printf("[LogX] 守护协程崩溃：%v，执行兜底刷盘\n", r)
-				l.Sync()
+				log.Printf("守护协程崩溃：%v，执行兜底刷盘", r)
+				l.safeSync()
 			}
 		}()
 
-		// 仅监听退出信号，无定时刷盘
-		select {
-		case sig := <-signalChan:
-			// 收到系统退出信号：强制刷盘 + 关闭通道
-			fmt.Printf("\n[LogX] 收到退出信号：%v，执行兜底刷盘...\n", sig)
-			l.Sync()
-			l.stopCh <- sig // 通知Close方法退出
-		case <-l.stopCh:
-			// 收到手动关闭信号：强制刷盘
-			l.Sync()
+		// ========== 核心修改：监听ctx.Done()，自动退出循环 ==========
+		for {
+			select {
+			case <-l.ctx.Done(): // 感知到退出信号，自动退出
+				log.Printf("[LogX] 守护协程自动退出（业务已结束）")
+				l.Sync() // 退出前最后刷一次盘
+				return
+
+			case sig := <-signalChan: // 兼容Ctrl+C手动退出
+				log.Printf("[LogX] 收到退出信号%v，刷盘后退出", sig)
+				for i := 0; i < 3; i++ {
+					l.Sync()
+					time.Sleep(l.config.ExitSyncDelay)
+					l.mutex.Lock()
+					if l.writer.Buffered() == 0 {
+						l.mutex.Unlock()
+						break
+					}
+					l.mutex.Unlock()
+				}
+				l.Close()
+				os.Exit(0)
+
+			case <-flushTicker.C: // 定时刷盘（业务运行中正常执行）
+				l.safeSync()
+			}
 		}
 	}()
 }
@@ -250,26 +298,69 @@ func (l *SyncLogger) Sync() {
 	defer l.mutex.Unlock()
 
 	if l.writer != nil {
+		// 1. 强制刷空缓冲区
 		if err := l.writer.Flush(); err != nil {
-			log.Println("[LogX] 刷盘失败：%v", err)
+			log.Printf("刷盘失败：%v", err)
+		}
+		// 2. 检查缓冲区是否真的空了（核心：避免残留）
+		if l.writer.Buffered() > 0 {
+			_ = l.writer.Flush()
 		}
 	}
 
 	if l.file != nil {
+		// 3. 强制内核写入物理磁盘
 		if err := l.file.Sync(); err != nil {
-			log.Println("[LogX] 文件同步失败：%v", err)
+			log.Printf("文件同步失败：%v", err)
 		}
 	}
 }
 
-// 关闭日志器（手动调用）
-func (l *SyncLogger) Close() {
-	close(l.stopCh) // 通知守护协程退出
-	l.wg.Wait()     // 等待守护协程完全退出
-
-	// 最终刷盘 + 关闭文件
+// 新增：安全刷盘（捕获panic）
+func (l *SyncLogger) safeSync() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("安全刷盘触发panic：%v", r)
+		}
+	}()
 	l.Sync()
-	if l.file != nil {
-		l.file.Close()
+}
+func (l *SyncLogger) safeSyncWithErr() error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("安全刷盘触发panic：%v", r)
+		}
+	}()
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	var err error
+	if l.writer != nil {
+		if e := l.writer.Flush(); e != nil {
+			err = e
+		}
 	}
+	if l.file != nil {
+		if e := l.file.Sync(); e != nil && err == nil {
+			err = e
+		}
+	}
+	return err
+}
+
+// 关闭日志器（手动调用或自动调用）
+func (l *SyncLogger) Close() {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	// 刷盘+关文件（自动退出时也会执行）
+	if l.writer != nil {
+		_ = l.writer.Flush()
+		_ = l.writer.Flush()
+	}
+	if l.file != nil {
+		_ = l.file.Sync()
+		_ = l.file.Close()
+	}
+	log.Printf("[LogX] 日志器自动刷盘关闭")
 }
