@@ -1,6 +1,7 @@
 package LogX
 
 import (
+	config2 "LogX/config"
 	"bufio"
 	"fmt"
 	"os"
@@ -11,9 +12,9 @@ import (
 )
 
 type AsyncLogger struct {
-	config    LoggerConfig
+	config    config2.LoggerConfig
 	model     string
-	colors    map[LogLevel]string
+	colors    map[config2.LogLevel]string
 	file      *os.File
 	writer    *bufio.Writer
 	conWriter *bufio.Writer
@@ -32,52 +33,76 @@ func NewDefaultAsyncLogger(model string) (*AsyncLogger, error) {
 		model = "default"
 	}
 	logger := &AsyncLogger{
-		config:    NewDefaultLoggerConfig(),
+		config:    config2.NewDefaultLoggerConfig(),
 		model:     model,
-		colors:    levelColors,
+		colors:    config2.LevelColors,
 		conWriter: bufio.NewWriterSize(os.Stdout, 4096),
 		stopCh:    make(chan interface{}),
 		stopChan:  make(chan interface{}),
 		fileChan:  make(chan string, 5000),
 		conChan:   make(chan string, 5000),
 	}
-	err := ensureFileExists(logger.config.Dir+"/"+logger.config.FileName, 0644)
-	if err != nil {
-		return nil, err
+
+	if logger.config.OutputFile == true {
+		logger.wg.Add(1)
+		go logger.writeToFile()
 	}
-	file, err := os.OpenFile(logger.config.Dir+"/"+logger.config.FileName, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, err
-	}
-	// 只有在需要输出到文件时才创建文件 writer
-	writer := bufio.NewWriterSize(file, logger.config.BufferSize)
-	logger.file = file
-	logger.writer = writer
-	logger.wg.Add(2)
-	go logger.writeToFile()
+	logger.wg.Add(1)
 	go logger.writeToConsole()
 	return logger, nil
 }
 
 func (l *AsyncLogger) Debug(format string, a ...interface{}) {
-	l.log(DEBUG, format, a...)
+	l.log(config2.DEBUG, format, a...)
 }
+
 func (l *AsyncLogger) Info(format string, a ...interface{}) {
-	l.log(INFO, format, a...)
+	l.log(config2.INFO, format, a...)
 }
 func (l *AsyncLogger) Warn(format string, a ...interface{}) {
-	l.log(WARNING, format, a...)
+	l.log(config2.WARNING, format, a...)
 }
 func (l *AsyncLogger) Error(format string, a ...interface{}) {
-	l.log(ERROR, format, a...)
+	l.log(config2.ERROR, format, a...)
 }
 func (l *AsyncLogger) Fatal(format string, a ...interface{}) {
-	l.log(FATAL, format, a...)
+	l.log(config2.FATAL, format, a...)
 }
-func (l *AsyncLogger) SetLevel(level LogLevel) {
+
+func (l *AsyncLogger) SetLevel(level config2.LogLevel) {
 	l.config.Level = level
 }
-func (l *AsyncLogger) log(level LogLevel, format string, args ...interface{}) {
+func (l *AsyncLogger) SetOutputFile(file *os.File) {
+	if file != nil {
+		l.config.OutputFile = true
+		l.file = file
+		l.writer = bufio.NewWriterSize(file, l.config.BufferSize)
+	}
+}
+func (l *AsyncLogger) SetOutputConsole(outputConsole bool) {
+	if l.config.OutputFile == false && outputConsole == false {
+		panic("至少需要输出一个日志输出方式")
+		return
+	}
+	l.config.OutputConsole = outputConsole
+}
+func (l *AsyncLogger) SetBufferSize(bufferSize int) {
+	l.config.BufferSize = bufferSize
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	_ = l.writer.Flush()
+	l.writer = bufio.NewWriterSize(l.file, bufferSize)
+}
+func (l *AsyncLogger) SetEnableColor(enableColor bool) {
+	l.config.EnableColor = enableColor
+}
+func (l *AsyncLogger) SetMaxBackups(maxBackups int) {
+	l.config.MaxBackups = maxBackups
+}
+func (l *AsyncLogger) SetMaxFileSize(maxFileSize int64) {
+	l.config.MaxFileSize = maxFileSize
+}
+func (l *AsyncLogger) log(level config2.LogLevel, format string, args ...interface{}) {
 	if level < l.config.Level {
 		return
 	}
@@ -99,9 +124,9 @@ func (l *AsyncLogger) log(level LogLevel, format string, args ...interface{}) {
 	}
 }
 
-func (l *AsyncLogger) formatLogEntry(level LogLevel, format string, args ...interface{}) string {
+func (l *AsyncLogger) formatLogEntry(level config2.LogLevel, format string, args ...interface{}) string {
 	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-	logLevelStr := levelStrings[level]
+	logLevelStr := config2.LevelStrings[level]
 	programId := l.model
 	logMessage := fmt.Sprintf(format, args...)
 
@@ -109,16 +134,16 @@ func (l *AsyncLogger) formatLogEntry(level LogLevel, format string, args ...inte
 		timestamp, logLevelStr, programId, logMessage)
 }
 
-func (l *AsyncLogger) formatLogColorEntry(level LogLevel, format string, args ...interface{}) string {
+func (l *AsyncLogger) formatLogColorEntry(level config2.LogLevel, format string, args ...interface{}) string {
 	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-	logLevelStr := levelStrings[level]
+	logLevelStr := config2.LevelStrings[level]
 	programId := l.model
 	logMessage := fmt.Sprintf(format, args...)
 	if l.config.EnableColor {
-		timestamp = ColorGray + timestamp + ColorReset
-		logLevelStr = l.colors[level] + logLevelStr + ColorReset
-		programId = ColorCyan + programId + ColorReset
-		logMessage = ColorWhite + logMessage + ColorReset
+		timestamp = config2.ColorGray + timestamp + config2.ColorReset
+		logLevelStr = l.colors[level] + logLevelStr + config2.ColorReset
+		programId = config2.ColorCyan + programId + config2.ColorReset
+		logMessage = config2.ColorWhite + logMessage + config2.ColorReset
 		return fmt.Sprintf("{%s} [%s] (%s)  - %s \n",
 			timestamp, logLevelStr, programId, logMessage)
 	}
