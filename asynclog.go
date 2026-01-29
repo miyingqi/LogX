@@ -2,265 +2,105 @@ package LogX
 
 import (
 	config2 "LogX/config"
-	"bufio"
-	"fmt"
-	"os"
-	"os/signal"
+	"LogX/core"
+	"LogX/hooks"
 	"sync"
-	"syscall"
 	"time"
 )
 
 type AsyncLogger struct {
 	config    config2.LoggerConfig
 	model     string
-	colors    map[config2.LogLevel]string
-	file      *os.File
-	writer    *bufio.Writer
-	conWriter *bufio.Writer
-	mutex     sync.Mutex
-	conMutex  sync.Mutex
-	stopCh    chan interface{}
-	wg        sync.WaitGroup
-	fileChan  chan string
-	conChan   chan string
-	stopChan  chan interface{}
-	sigStop   chan struct{} // 新增：用于停止信号监听
+	logChan   chan *core.Entry
+	entryPool sync.Pool
+	formatter core.Formatter
+	hook      *hooks.HookManager
+	skip      int
 }
 
-func NewDefaultAsyncLogger(model string) (*AsyncLogger, error) {
+func NewDefaultAAsyncLogger(model string) *AsyncLogger {
 	if model == "" {
 		model = "default"
 	}
 	logger := &AsyncLogger{
-		config:    config2.NewDefaultLoggerConfig(),
-		model:     model,
-		colors:    config2.LevelColors,
-		conWriter: bufio.NewWriterSize(os.Stdout, 4096),
-		stopCh:    make(chan interface{}),
-		stopChan:  make(chan interface{}),
-		fileChan:  make(chan string, 5000),
-		conChan:   make(chan string, 5000),
+		config:  config2.NewDefaultLoggerConfig(),
+		model:   model,
+		logChan: make(chan *core.Entry),
+		entryPool: sync.Pool{
+			New: func() interface{} {
+				return core.NewEntry()
+			},
+		},
 	}
 
-	if logger.config.OutputFile == true {
-		logger.wg.Add(1)
-		go logger.writeToFile()
-	}
-	logger.wg.Add(1)
-	go logger.writeToConsole()
-	return logger, nil
+	return logger
 }
 
-func (l *AsyncLogger) Debug(format string, a ...interface{}) {
-	l.log(config2.DEBUG, format, a...)
+func (l *AsyncLogger) Trace(format string, args ...interface{}) {
+
 }
 
-func (l *AsyncLogger) Info(format string, a ...interface{}) {
-	l.log(config2.INFO, format, a...)
-}
-func (l *AsyncLogger) Warn(format string, a ...interface{}) {
-	l.log(config2.WARNING, format, a...)
-}
-func (l *AsyncLogger) Error(format string, a ...interface{}) {
-	l.log(config2.ERROR, format, a...)
-}
-func (l *AsyncLogger) Fatal(format string, a ...interface{}) {
-	l.log(config2.FATAL, format, a...)
+func (l *AsyncLogger) Debug(format string, args ...interface{}) {
+
 }
 
+func (l *AsyncLogger) Info(format string, args ...interface{}) {
+
+}
+
+func (l *AsyncLogger) Warn(format string, args ...interface{}) {
+
+}
+
+func (l *AsyncLogger) Error(format string, args ...interface{}) {
+
+}
+
+func (l *AsyncLogger) Fatal(format string, args ...interface{}) {
+
+}
+
+func (l *AsyncLogger) Panic(format string, args ...interface{}) {
+
+}
+func (l *AsyncLogger) Field(fields map[string]interface{}) *AsyncLogger {
+
+	return l
+}
+
+// Caller 设置调用栈跳过层级（支持链式调用）
+func (l *AsyncLogger) Caller(skip int) *AsyncLogger {
+
+	return l
+}
+
+// SetLevel 设置日志级别
 func (l *AsyncLogger) SetLevel(level config2.LogLevel) {
-	l.config.Level = level
+
 }
-func (l *AsyncLogger) SetOutputFile(file *os.File) {
-	if file != nil {
-		l.config.OutputFile = true
-		l.file = file
-		l.writer = bufio.NewWriterSize(file, l.config.BufferSize)
-	}
+
+func (l *AsyncLogger) SetShowCaller(show bool) {
+
 }
-func (l *AsyncLogger) SetOutputConsole(outputConsole bool) {
-	if l.config.OutputFile == false && outputConsole == false {
-		panic("至少需要输出一个日志输出方式")
-		return
-	}
-	l.config.OutputConsole = outputConsole
+
+// SetFormatter 设置格式化器（支持动态切换，如JSONFormatter）
+func (l *AsyncLogger) SetFormatter(formatter core.Formatter) {
+
 }
-func (l *AsyncLogger) SetBufferSize(bufferSize int) {
-	l.config.BufferSize = bufferSize
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-	_ = l.writer.Flush()
-	l.writer = bufio.NewWriterSize(l.file, bufferSize)
+func (l *AsyncLogger) AddHook(hook hooks.HookBase) {
+
 }
-func (l *AsyncLogger) SetEnableColor(enableColor bool) {
-	l.config.EnableColor = enableColor
-}
-func (l *AsyncLogger) SetMaxBackups(maxBackups int) {
-	l.config.MaxBackups = maxBackups
-}
-func (l *AsyncLogger) SetMaxFileSize(maxFileSize int64) {
-	l.config.MaxFileSize = maxFileSize
-}
-func (l *AsyncLogger) log(level config2.LogLevel, format string, args ...interface{}) {
+
+func (l *AsyncLogger) log(level config2.LogLevel, message string) {
 	if level < l.config.Level {
 		return
 	}
-
-	// 非阻塞发送到 fileChan
-	select {
-	case l.fileChan <- l.formatLogEntry(level, format, args...):
-	default:
-		// 如果 channel 满了，则丢弃日志
-		fmt.Println("fileChan is full, dropping log entry")
+	entry, ok := l.entryPool.Get().(*core.Entry)
+	if !ok {
+		entry = core.NewEntry()
 	}
-
-	// 非阻塞发送到 conChan
-	select {
-	case l.conChan <- l.formatLogColorEntry(level, format, args...):
-	default:
-		// 如果 channel 满了，则丢弃日志
-		fmt.Println("conChan is full, dropping log entry")
-	}
+	entry.SetEntry(time.Now(), level, message, l.model, l.skip, nil)
 }
-
-func (l *AsyncLogger) formatLogEntry(level config2.LogLevel, format string, args ...interface{}) string {
-	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-	logLevelStr := config2.LevelStrings[level]
-	programId := l.model
-	logMessage := fmt.Sprintf(format, args...)
-
-	return fmt.Sprintf("{%s} [%s] (%s)  - %s \n",
-		timestamp, logLevelStr, programId, logMessage)
-}
-
-func (l *AsyncLogger) formatLogColorEntry(level config2.LogLevel, format string, args ...interface{}) string {
-	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-	logLevelStr := config2.LevelStrings[level]
-	programId := l.model
-	logMessage := fmt.Sprintf(format, args...)
-	if l.config.EnableColor {
-		timestamp = config2.ColorGray + timestamp + config2.ColorReset
-		logLevelStr = l.colors[level] + logLevelStr + config2.ColorReset
-		programId = config2.ColorCyan + programId + config2.ColorReset
-		logMessage = config2.ColorWhite + logMessage + config2.ColorReset
-		return fmt.Sprintf("{%s} [%s] (%s)  - %s \n",
-			timestamp, logLevelStr, programId, logMessage)
-	}
-	return fmt.Sprintf("{%s} [%s] (%s)  - %s \n",
-		timestamp, logLevelStr, programId, logMessage)
-}
-
-// 优化 writeToFile：批量刷盘 + 修复水位判断
-func (l *AsyncLogger) writeToFile() {
-	defer l.wg.Done()
-	for {
-		select {
-		case logEntry, ok := <-l.fileChan:
-			if !ok {
-				// 通道已关闭，处理剩余缓冲区内容后退出
-				l.mutex.Lock()
-				_ = l.writer.Flush()
-				l.mutex.Unlock()
-				return
-			}
-			l.mutex.Lock()
-			_, err := l.writer.WriteString(logEntry)
-			if err != nil {
-				fmt.Printf("文件写入失败：%v\n", err)
-				l.mutex.Unlock()
-				continue // 错误时不终止协程，继续处理下一条
-			}
-			// 修复水位判断：用浮点除法，80%水位时刷盘
-			if float64(l.writer.Buffered())/float64(l.config.BufferSize) >= 0.8 {
-				_ = l.writer.Flush()
-			}
-			l.mutex.Unlock()
-		}
-	}
-}
-
-// 优化 writeToConsole：处理剩余日志后退出
-func (l *AsyncLogger) writeToConsole() {
-	defer l.wg.Done()
-
-	// 创建一个ticker用于定期刷新控制台输出
-	ticker := time.NewTicker(l.config.FlushInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case logEntry, ok := <-l.conChan:
-			if !ok {
-				// 通道已关闭，处理剩余缓冲区内容后退出
-				l.conMutex.Lock()
-				_ = l.conWriter.Flush()
-				l.conMutex.Unlock()
-				return
-			}
-			l.conMutex.Lock()
-			_, err := l.conWriter.WriteString(logEntry)
-			if err != nil {
-				fmt.Printf("控制台写入失败：%v\n", err)
-				l.conMutex.Unlock()
-				continue
-			}
-			// 控制台缓冲区80%水位时刷盘 (使用固定的4096作为控制台缓冲区大小)
-			if float64(l.conWriter.Buffered())/4096.0 >= 0.8 {
-				_ = l.conWriter.Flush()
-			}
-			l.conMutex.Unlock()
-		case <-ticker.C:
-			// 定期刷新控制台输出
-			l.conMutex.Lock()
-			_ = l.conWriter.Flush()
-			l.conMutex.Unlock()
-		}
-	}
-}
-
-// 新增：优雅关闭日志器
 func (l *AsyncLogger) Close() {
-	// 避免重复关闭
-	select {
-	case <-l.stopChan:
-		// 已经关闭，直接返回
-		return
-	default:
-		// 继续执行关闭流程
-	}
 
-	// 关闭输入通道，通知写入协程不再接收新日志
-	close(l.fileChan)
-	close(l.conChan)
-
-	// 等待消费协程退出
-	l.wg.Wait()
-
-	// 刷空文件缓冲区并关闭文件
-	l.mutex.Lock()
-	_ = l.writer.Flush()
-	_ = l.file.Close()
-	l.mutex.Unlock()
-
-	// 刷空控制台缓冲区
-	l.conMutex.Lock()
-	_ = l.conWriter.Flush()
-	l.conMutex.Unlock()
-}
-
-// handleSignals 处理系统信号，实现自动关闭
-func (l *AsyncLogger) handleSignals() {
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
-
-	select {
-	case sig := <-signalChan:
-		// 收到中断信号，关闭sigStop通道触发自动关闭
-		fmt.Printf("\n[LogX] 异步日志收到退出信号：%v，准备关闭...\n", sig)
-		close(l.sigStop)
-	case <-l.sigStop:
-		// 已收到关闭信号
-		return
-	}
 }

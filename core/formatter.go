@@ -6,17 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 )
 
-type Entry struct {
-	Timestamp time.Time              `json:"time,omitempty"`    // 日志时间（修正拼写）
-	Level     config2.LogLevel       `json:"level,omitempty"`   // 日志级别
-	Message   string                 `json:"message,omitempty"` // 核心消息
-	Fields    map[string]interface{} `json:"fields,omitempty"`  // 扩展字段（如trace_id、caller）
-	Skip      int                    `json:"skip,omitempty"`    // 调用栈跳过层级（用于获取caller）
-	Model     string                 `json:"model,omitempty"`   // 服务/模型名
-}
 type Formatter interface {
 	Format(entry *Entry) ([]byte, error)
 }
