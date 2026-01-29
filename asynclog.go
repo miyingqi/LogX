@@ -279,8 +279,7 @@ func (l *AsyncLogger) shouldScaleUp() bool {
 	// 队列使用率超过50%，触发扩容
 	queueCapacity := cap(l.logChan)
 	queueLength := len(l.logChan)
-	usage := float64(queueLength) / float64(queueCapacity)
-	return usage > 0.5
+	return float64(queueLength)/float64(queueCapacity) > 0.5
 }
 
 // scaleUpIfNecessary 强制扩容消费者（队列满时调用）
