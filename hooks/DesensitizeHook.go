@@ -9,7 +9,7 @@ import (
 type DesensitizeHook struct{}
 
 // Fire 实现钩子核心逻辑：替换日志中的手机号为 138****5678 格式
-func (d *DesensitizeHook) Fire(entry *core.Entry, stage HookStage) (bool, error) {
+func (d *DesensitizeHook) Fire(entry *core.Entry, _ HookStage) (bool, error) {
 	phoneReg := regexp.MustCompile(`1[3-9]\d{9}`)
 	entry.Message = phoneReg.ReplaceAllStringFunc(entry.Message, func(matched string) string {
 		if len(matched) >= 7 {

@@ -1,7 +1,7 @@
 package LogX
 
 import (
-	"LogX/config"
+	config2 "LogX/config"
 	"LogX/core"
 	"LogX/hooks"
 	"fmt"
@@ -11,14 +11,14 @@ import (
 )
 
 type SyncLogger struct {
-	config    config.LoggerConfig // 全局不变配置
-	model     string              // 全局不变模型名
-	mutex     sync.Mutex          // 全局锁：仅保护「配置修改」和「日志最终输出」
-	formatter core.Formatter      // 全局共享格式化器
-	hook      *hooks.HookManager  // 全局共享钩子管理器
+	config    config2.LoggerConfig // 全局不变配置
+	model     string               // 全局不变模型名
+	mutex     sync.Mutex           // 全局锁：仅保护「配置修改」和「日志最终输出」
+	formatter core.Formatter       // 全局共享格式化器
+	hook      *hooks.HookManager   // 全局共享钩子管理器
 }
 
-type logContext struct {
+type LogContext struct {
 	logger *SyncLogger    // 关联无状态日志器
 	fields map[string]any // 本次调用私有字段（无共享）
 	skip   int            // 本次调用私有skip（无共享）
@@ -29,9 +29,9 @@ func NewDefaultSyncLogger(model string) *SyncLogger {
 	if model == "" {
 		model = "default"
 	}
-	defaultConfig := config.NewDefaultLoggerConfig()
+	defaultConfig := config2.NewDefaultLoggerConfig()
 	defaultFormatter := core.TextFormatter{
-		EnableColor:     config.DefaultEnableColor,
+		EnableColor:     config2.DefaultEnableColor,
 		TimestampFormat: time.DateTime,
 		ShowCaller:      false,
 	}
@@ -46,13 +46,13 @@ func NewDefaultSyncLogger(model string) *SyncLogger {
 }
 
 // NewSyncLogger 自定义配置创建日志器（同理，删除fields/skip初始化，代码更简单）
-func NewSyncLogger(model string, conf config.LC) *SyncLogger {
-	con := config.ParseLoggerConfigFromJSON(conf)
+func NewSyncLogger(model string, conf config2.LC) *SyncLogger {
+	con := config2.ParseLoggerConfigFromJSON(conf)
 	logger := &SyncLogger{
 		config: con,
 		model:  model,
 		formatter: &core.TextFormatter{
-			EnableColor:     config.DefaultEnableColor,
+			EnableColor:     config2.DefaultEnableColor,
 			TimestampFormat: time.DateTime,
 			ShowCaller:      con.ShowCaller,
 		},
@@ -61,9 +61,9 @@ func NewSyncLogger(model string, conf config.LC) *SyncLogger {
 	return logger
 }
 
-func (l *SyncLogger) Field(fields map[string]any) *logContext {
+func (l *SyncLogger) Field(fields map[string]any) *LogContext {
 	// 初始化本次调用的私有上下文，预分配字段空间
-	ctx := &logContext{
+	ctx := &LogContext{
 		logger: l,
 		fields: make(map[string]any, len(fields)),
 		skip:   4, // 默认skip，和原版本一致
@@ -74,33 +74,33 @@ func (l *SyncLogger) Field(fields map[string]any) *logContext {
 	return ctx
 }
 
-func (l *logContext) Caller(skip int) *logContext {
+func (l *LogContext) Caller(skip int) *LogContext {
 	l.skip = skip
 	return l
 }
 
-func (l *logContext) Trace(format string, args ...interface{}) {
-	l.logger.output(config.TRACE, fmt.Sprintf(format, args...), l.fields, l.skip)
+func (l *LogContext) Trace(format string, args ...interface{}) {
+	l.logger.output(config2.TRACE, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *logContext) Debug(format string, args ...interface{}) {
-	l.logger.output(config.DEBUG, fmt.Sprintf(format, args...), l.fields, l.skip)
+func (l *LogContext) Debug(format string, args ...interface{}) {
+	l.logger.output(config2.DEBUG, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *logContext) Info(format string, args ...interface{}) {
-	l.logger.output(config.INFO, fmt.Sprintf(format, args...), l.fields, l.skip)
+func (l *LogContext) Info(format string, args ...interface{}) {
+	l.logger.output(config2.INFO, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *logContext) Warn(format string, args ...interface{}) {
-	l.logger.output(config.WARNING, fmt.Sprintf(format, args...), l.fields, l.skip)
+func (l *LogContext) Warn(format string, args ...interface{}) {
+	l.logger.output(config2.WARNING, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *logContext) Error(format string, args ...interface{}) {
-	l.logger.output(config.ERROR, fmt.Sprintf(format, args...), l.fields, l.skip)
+func (l *LogContext) Error(format string, args ...interface{}) {
+	l.logger.output(config2.ERROR, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *logContext) Fatal(format string, args ...interface{}) {
-	l.logger.output(config.FATAL, fmt.Sprintf(format, args...), l.fields, l.skip)
+func (l *LogContext) Fatal(format string, args ...interface{}) {
+	l.logger.output(config2.FATAL, fmt.Sprintf(format, args...), l.fields, l.skip)
 	os.Exit(1)
 }
-func (l *logContext) Panic(format string, args ...interface{}) {
+func (l *LogContext) Panic(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	l.logger.output(config.PANIC, msg, l.fields, l.skip)
+	l.logger.output(config2.PANIC, msg, l.fields, l.skip)
 	panic(msg)
 }
 
@@ -126,7 +126,7 @@ func (l *SyncLogger) Panic(format string, args ...interface{}) {
 	l.Field(nil).Panic(format, args...)
 }
 
-func (l *SyncLogger) output(level config.LogLevel, message string, fields map[string]any, skip int) {
+func (l *SyncLogger) output(level config2.LogLevel, message string, fields map[string]any, skip int) {
 	if level < l.config.Level {
 		return
 	}
@@ -169,7 +169,7 @@ func (l *SyncLogger) output(level config.LogLevel, message string, fields map[st
 		return
 	}
 	if l.config.OutputConsole {
-		if level >= config.ERROR {
+		if level >= config2.ERROR {
 			_, _ = os.Stderr.Write(logBytes)
 		} else {
 			_, _ = os.Stdout.Write(logBytes)
@@ -178,7 +178,7 @@ func (l *SyncLogger) output(level config.LogLevel, message string, fields map[st
 
 }
 
-func (l *SyncLogger) SetLevel(level config.LogLevel) {
+func (l *SyncLogger) SetLevel(level config2.LogLevel) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	l.config.Level = level
