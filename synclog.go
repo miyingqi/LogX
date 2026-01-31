@@ -176,6 +176,14 @@ func (l *SyncLogger) output(level config2.LogLevel, message string, fields map[s
 		}
 	}
 
+	// 执行写入后钩子
+	skipHook, errs = l.hook.RunHooks(hooks.StageAfterWrite, level, &entry)
+	if len(errs) > 0 {
+		fmt.Printf("【钩子错误】写入后：%v\n", errs)
+	}
+	if skipHook {
+		return
+	}
 }
 
 func (l *SyncLogger) SetLevel(level config2.LogLevel) {
