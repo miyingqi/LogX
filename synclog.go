@@ -16,6 +16,7 @@ type SyncLogger struct {
 	mutex     sync.Mutex           // 全局锁：仅保护「配置修改」和「日志最终输出」
 	formatter core.Formatter       // 全局共享格式化器
 	hook      *hooks.HookManager   // 全局共享钩子管理器
+	errorOut  *os.File             // 全局共享错误输出
 }
 
 type LogContext struct {
@@ -41,6 +42,7 @@ func NewDefaultSyncLogger(model string) *SyncLogger {
 		model:     model,
 		formatter: &defaultFormatter,
 		hook:      hooks.NewHookManager(),
+		errorOut:  os.Stderr,
 	}
 	return logger
 }
@@ -146,8 +148,9 @@ func (l *SyncLogger) output(level config2.LogLevel, message string, fields map[s
 	// 执行钩子（原有逻辑不变）
 	skipHook, errs := l.hook.RunHooks(hooks.StageBeforeFormat, level, &entry)
 	if errs != nil {
-		fmt.Printf("日志钩子执行失败：%v\n", errs)
-		return
+		for _, err := range errs {
+			_, _ = l.errorOut.WriteString(err.Error())
+		}
 	}
 	if skipHook {
 		return
@@ -156,14 +159,16 @@ func (l *SyncLogger) output(level config2.LogLevel, message string, fields map[s
 	// 格式化日志（原有逻辑不变）
 	logBytes, err := l.formatter.Format(&entry)
 	if err != nil {
-		fmt.Printf("日志格式化失败：%v\n", err)
+		_, _ = l.errorOut.WriteString(err.Error())
 		return
 	}
 
 	// 后续钩子+控制台输出（原有逻辑不变，无任何状态重置）
 	skipHook, errs = l.hook.RunHooks(hooks.StageAfterFormat, level, &entry)
 	if len(errs) > 0 {
-		fmt.Printf("【钩子错误】格式化后：%v\n", errs)
+		for _, err := range errs {
+			_, _ = l.errorOut.WriteString(err.Error())
+		}
 	}
 	if skipHook {
 		return
@@ -179,7 +184,9 @@ func (l *SyncLogger) output(level config2.LogLevel, message string, fields map[s
 	// 执行写入后钩子
 	skipHook, errs = l.hook.RunHooks(hooks.StageAfterWrite, level, &entry)
 	if len(errs) > 0 {
-		fmt.Printf("【钩子错误】写入后：%v\n", errs)
+		for _, err := range errs {
+			_, _ = l.errorOut.WriteString(err.Error())
+		}
 	}
 	if skipHook {
 		return

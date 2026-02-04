@@ -24,6 +24,7 @@ type AsyncLogger struct {
 	consumerMutex sync.RWMutex       // 消费者数量读写锁（严格遵循调用规范）
 	isClosed      bool               // 日志器关闭标记
 	consoleMu     sync.Mutex         // 控制台全局写锁，避免多消费者IO竞争
+	errorOut      *os.File           // 错误日志输出
 }
 
 type AsyncLogContext struct {
@@ -57,6 +58,7 @@ func NewDefaultAsyncLogger(model string) *AsyncLogger {
 		consumers:    0,
 		isClosed:     false,
 		consoleMu:    sync.Mutex{}, // 初始化控制台锁，避免panic
+		errorOut:     os.Stderr,    // 默认错误日志输出到标准错误
 	}
 	// 启动3个初始消费者协程
 	for i := 0; i < 3; i++ {
@@ -151,14 +153,8 @@ func (l *AsyncLogger) output(level config2.LogLevel, message string, fields map[
 		case l.logChan <- entry:
 			sentSuccess = true
 		default:
-			// 扩容失败，打印详细错误日志
-			l.consumerMutex.RLock()
-			consumers := l.consumers
-			l.consumerMutex.RUnlock()
-			fmt.Fprintf(os.Stderr, "[%s] 【异步日志】通道已满且扩容失败！队列%d/%d，当前消费者%d，日志丢弃：%s\n",
-				time.Now().Format("2006-01-02 15:04:05"),
-				len(l.logChan), cap(l.logChan),
-				consumers, message)
+			// 队列依然满，丢弃日志，避免阻塞
+			_, _ = l.errorOut.WriteString("[丢弃日志] " + message)
 		}
 	}
 }
@@ -181,8 +177,7 @@ func (l *AsyncLogger) startConsumer() {
 		// 必加：panic恢复，保证锁释放和wg.Done执行
 		defer func() {
 			if err := recover(); err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] 【异步日志】消费者%dpanic：%v\n",
-					time.Now().Format("2006-01-02 15:04:05"), consumerID, err)
+				_, _ = l.errorOut.WriteString("[消费者协程panic] " + fmt.Sprintf("ID：%d，错误：%v\n", consumerID, err))
 			}
 			// 核心修复：Lock() 严格对应 Unlock()，解决RUnlock未加锁错误
 			l.consumerMutex.Lock()
@@ -206,8 +201,7 @@ func (l *AsyncLogger) processEntry(entry *core.Entry) {
 	// 格式化前钩子：处理跳过标记，避免无效操作
 	skipHook, errs := l.hook.RunHooks(hooks.StageBeforeFormat, entry.Level, entry)
 	if len(errs) > 0 {
-		fmt.Fprintf(os.Stderr, "[%s] 【异步日志】格式化前钩子错误：%v\n",
-			time.Now().Format("2006-01-02 15:04:05"), errs)
+		_, _ = l.errorOut.WriteString(fmt.Sprintf("[%s] 【异步日志】格式化前钩子错误：%v\n", time.Now().Format("2006-01-02 15:04:05"), errs))
 	}
 	if skipHook {
 		return
@@ -216,16 +210,14 @@ func (l *AsyncLogger) processEntry(entry *core.Entry) {
 	// 格式化日志：处理错误，避免卡住消费协程
 	logBytes, err := l.formatter.Format(entry)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] 【异步日志】格式化失败：%v，日志：%s\n",
-			time.Now().Format("2006-01-02 15:04:05"), err, entry.Message)
+		_, _ = l.errorOut.WriteString(fmt.Sprintf("[%s] 【异步日志】格式化失败：%v\n", time.Now().Format("2006-01-02 15:04:05"), err))
 		return
 	}
 
 	// 格式化后钩子：再次过滤无效操作
 	skipHook, errs = l.hook.RunHooks(hooks.StageAfterFormat, entry.Level, entry)
 	if len(errs) > 0 {
-		fmt.Fprintf(os.Stderr, "[%s] 【异步日志】格式化后钩子错误：%v\n",
-			time.Now().Format("2006-01-02 15:04:05"), errs)
+		_, _ = l.errorOut.WriteString(fmt.Sprintf("[%s] 【异步日志】格式化后钩子错误：%v\n", time.Now().Format("2006-01-02 15:04:05"), errs))
 	}
 	if skipHook {
 		return
@@ -237,25 +229,21 @@ func (l *AsyncLogger) processEntry(entry *core.Entry) {
 		defer l.consoleMu.Unlock()
 		if entry.Level >= config2.ERROR {
 			if _, err := os.Stderr.Write(logBytes); err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] 【异步日志】标准错误输出失败：%v\n",
-					time.Now().Format("2006-01-02 15:04:05"), err)
+				_, _ = l.errorOut.WriteString(fmt.Sprintf("[%s] 【异步日志】标准错误输出失败：%v\n", time.Now().Format("2006-01-02 15:04:05"), err))
 			}
 		} else {
 			if _, err := os.Stdout.Write(logBytes); err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] 【异步日志】标准输出失败：%v\n",
-					time.Now().Format("2006-01-02 15:04:05"), err)
+				_, _ = l.errorOut.WriteString(fmt.Sprintf("[%s] 【异步日志】标准输出失败：%v\n", time.Now().Format("2006-01-02 15:04:05"), err))
 			}
 		}
 	}
 
 	// 后续钩子：保留逻辑，增加错误打印
 	if _, errs := l.hook.RunHooks(hooks.StageBeforeWrite, entry.Level, entry); len(errs) > 0 {
-		fmt.Fprintf(os.Stderr, "[%s] 【异步日志】写入前钩子错误：%v\n",
-			time.Now().Format("2006-01-02 15:04:05"), errs)
+		_, _ = l.errorOut.WriteString(fmt.Sprintf("[%s] 【异步日志】写入前钩子错误：%v\n", time.Now().Format("2006-01-02 15:04:05"), errs))
 	}
 	if _, errs := l.hook.RunHooks(hooks.StageAfterWrite, entry.Level, entry); len(errs) > 0 {
-		fmt.Fprintf(os.Stderr, "[%s] 【异步日志】写入后钩子错误：%v\n",
-			time.Now().Format("2006-01-02 15:04:05"), errs)
+		_, _ = l.errorOut.WriteString(fmt.Sprintf("[%s] 【异步日志】写入后钩子错误：%v\n", time.Now().Format("2006-01-02 15:04:05"), errs))
 	}
 }
 
