@@ -4,6 +4,8 @@
 *.so
 *.dylib
 *.log
+*.env
+*.pem
 
 .idea
 .vscode
