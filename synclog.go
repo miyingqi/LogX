@@ -19,7 +19,7 @@ type SyncLogger struct {
 	errorOut  *os.File             // 全局共享错误输出
 }
 
-type LogContext struct {
+type syncContext struct {
 	logger *SyncLogger    // 关联无状态日志器
 	fields map[string]any // 本次调用私有字段（无共享）
 	skip   int            // 本次调用私有skip（无共享）
@@ -63,9 +63,9 @@ func NewSyncLogger(model string, conf config2.LC) *SyncLogger {
 	return logger
 }
 
-func (l *SyncLogger) Field(fields map[string]any) *LogContext {
+func (l *SyncLogger) Field(fields map[string]any) core.LoggerContext {
 	// 初始化本次调用的私有上下文，预分配字段空间
-	ctx := &LogContext{
+	ctx := &syncContext{
 		logger: l,
 		fields: make(map[string]any, len(fields)),
 		skip:   4, // 默认skip，和原版本一致
@@ -76,31 +76,31 @@ func (l *SyncLogger) Field(fields map[string]any) *LogContext {
 	return ctx
 }
 
-func (l *LogContext) Caller(skip int) *LogContext {
+func (l *syncContext) Caller(skip int) core.LoggerContext {
 	l.skip = skip
 	return l
 }
 
-func (l *LogContext) Trace(format string, args ...interface{}) {
+func (l *syncContext) Trace(format string, args ...interface{}) {
 	l.logger.output(config2.TRACE, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *LogContext) Debug(format string, args ...interface{}) {
+func (l *syncContext) Debug(format string, args ...interface{}) {
 	l.logger.output(config2.DEBUG, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *LogContext) Info(format string, args ...interface{}) {
+func (l *syncContext) Info(format string, args ...interface{}) {
 	l.logger.output(config2.INFO, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *LogContext) Warn(format string, args ...interface{}) {
+func (l *syncContext) Warn(format string, args ...interface{}) {
 	l.logger.output(config2.WARNING, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *LogContext) Error(format string, args ...interface{}) {
+func (l *syncContext) Error(format string, args ...interface{}) {
 	l.logger.output(config2.ERROR, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *LogContext) Fatal(format string, args ...interface{}) {
+func (l *syncContext) Fatal(format string, args ...interface{}) {
 	l.logger.output(config2.FATAL, fmt.Sprintf(format, args...), l.fields, l.skip)
 	os.Exit(1)
 }
-func (l *LogContext) Panic(format string, args ...interface{}) {
+func (l *syncContext) Panic(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	l.logger.output(config2.PANIC, msg, l.fields, l.skip)
 	panic(msg)

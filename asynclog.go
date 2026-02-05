@@ -27,7 +27,7 @@ type AsyncLogger struct {
 	errorOut      *os.File           // 错误日志输出
 }
 
-type AsyncLogContext struct {
+type asyncContext struct {
 	logger *AsyncLogger
 	fields map[string]interface{}
 	skip   int
@@ -68,6 +68,36 @@ func NewDefaultAsyncLogger(model string) *AsyncLogger {
 	return l
 }
 
+func (l *asyncContext) Caller(skip int) core.LoggerContext {
+	l.skip = skip
+	return l
+}
+
+func (l *asyncContext) Trace(format string, args ...interface{}) {
+	l.logger.output(config2.TRACE, fmt.Sprintf(format, args...), l.fields, l.skip)
+}
+func (l *asyncContext) Debug(format string, args ...interface{}) {
+	l.logger.output(config2.DEBUG, fmt.Sprintf(format, args...), l.fields, l.skip)
+}
+func (l *asyncContext) Info(format string, args ...interface{}) {
+	l.logger.output(config2.INFO, fmt.Sprintf(format, args...), l.fields, l.skip)
+}
+func (l *asyncContext) Warn(format string, args ...interface{}) {
+	l.logger.output(config2.WARNING, fmt.Sprintf(format, args...), l.fields, l.skip)
+}
+func (l *asyncContext) Error(format string, args ...interface{}) {
+	l.logger.output(config2.ERROR, fmt.Sprintf(format, args...), l.fields, l.skip)
+}
+func (l *asyncContext) Fatal(format string, args ...interface{}) {
+	l.logger.output(config2.FATAL, fmt.Sprintf(format, args...), l.fields, l.skip)
+	os.Exit(1)
+}
+func (l *asyncContext) Panic(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	l.logger.output(config2.PANIC, msg, l.fields, l.skip)
+	panic(msg)
+}
+
 // 基础日志方法：保留原有逻辑
 func (l *AsyncLogger) Trace(format string, args ...interface{}) { l.Field(nil).Trace(format, args...) }
 func (l *AsyncLogger) Debug(format string, args ...interface{}) { l.Field(nil).Debug(format, args...) }
@@ -77,8 +107,8 @@ func (l *AsyncLogger) Error(format string, args ...interface{}) { l.Field(nil).E
 func (l *AsyncLogger) Fatal(format string, args ...interface{}) { l.Field(nil).Fatal(format, args...) }
 func (l *AsyncLogger) Panic(format string, args ...interface{}) { l.Field(nil).Panic(format, args...) }
 
-func (l *AsyncLogger) Field(fields map[string]any) *AsyncLogContext {
-	ctx := &AsyncLogContext{
+func (l *AsyncLogger) Field(fields map[string]any) core.LoggerContext {
+	ctx := &asyncContext{
 		logger: l,
 		fields: make(map[string]any, len(fields)),
 		skip:   4,
@@ -294,39 +324,4 @@ func (l *AsyncLogger) Close() {
 	l.mutex.Unlock() // 立即释放，避免阻塞生产协程的读锁
 	l.wg.Wait()
 
-}
-
-// -------------------------- AsyncLogContext 方法实现 --------------------------
-func (l *AsyncLogContext) Caller(skip int) *AsyncLogContext { l.skip = skip; return l }
-func (l *AsyncLogContext) Trace(format string, args ...interface{}) {
-	l.logger.output(config2.TRACE, fmt.Sprintf(format, args...), l.fields, l.skip)
-}
-func (l *AsyncLogContext) Debug(format string, args ...interface{}) {
-	l.logger.output(config2.DEBUG, fmt.Sprintf(format, args...), l.fields, l.skip)
-}
-func (l *AsyncLogContext) Info(format string, args ...interface{}) {
-	l.logger.output(config2.INFO, fmt.Sprintf(format, args...), l.fields, l.skip)
-}
-func (l *AsyncLogContext) Warn(format string, args ...interface{}) {
-	l.logger.output(config2.WARNING, fmt.Sprintf(format, args...), l.fields, l.skip)
-}
-func (l *AsyncLogContext) Error(format string, args ...interface{}) {
-	l.logger.output(config2.ERROR, fmt.Sprintf(format, args...), l.fields, l.skip)
-}
-
-// Fatal 致命日志：输出后优雅关闭日志器，再退出程序
-func (l *AsyncLogContext) Fatal(format string, args ...interface{}) {
-	l.logger.output(config2.FATAL, fmt.Sprintf(format, args...), l.fields, l.skip)
-	time.Sleep(100 * time.Millisecond) // 等待消费协程处理致命日志
-	l.logger.Close()
-	os.Exit(1)
-}
-
-// Panic 恐慌日志：输出后优雅关闭日志器，再触发panic
-func (l *AsyncLogContext) Panic(format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	l.logger.output(config2.PANIC, msg, l.fields, l.skip)
-	time.Sleep(100 * time.Millisecond) // 等待消费协程处理恐慌日志
-	l.logger.Close()
-	panic(msg)
 }
