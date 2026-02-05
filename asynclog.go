@@ -54,8 +54,8 @@ func NewDefaultAsyncLogger(model string) *AsyncLogger {
 		},
 		formatter:    &defaultFormatter,
 		hook:         hooks.NewHookManager(),
-		maxConsumers: 8, // 最大8个消费者，可根据CPU核心数调整
-		consumers:    0,
+		maxConsumers: 16, // 最大8个消费者，可根据CPU核心数调整
+		consumers:    3,
 		isClosed:     false,
 		consoleMu:    sync.Mutex{}, // 初始化控制台锁，避免panic
 		errorOut:     os.Stderr,    // 默认错误日志输出到标准错误
@@ -66,6 +66,36 @@ func NewDefaultAsyncLogger(model string) *AsyncLogger {
 	}
 
 	return l
+}
+func NewAsyncLogger(model string, conf config2.LC) *AsyncLogger {
+	con := config2.ParseLoggerConfigFromJSON(conf)
+	logger := &AsyncLogger{
+		config:  con,
+		model:   model,
+		logChan: make(chan *core.Entry, 1024), // 1024缓冲区，可根据业务调整
+		entryPool: sync.Pool{
+			New: func() interface{} {
+				return core.NewEntry()
+			},
+		},
+		formatter: &core.TextFormatter{
+			EnableColor:     config2.DefaultEnableColor,
+			TimestampFormat: time.DateTime,
+			ShowCaller:      con.ShowCaller,
+		},
+		hook:         hooks.NewHookManager(),
+		maxConsumers: 16, // 最大8个消费者，可根据CPU核心数调整
+		consumers:    3,
+		isClosed:     false,
+		consoleMu:    sync.Mutex{}, // 初始化控制台锁，避免panic
+		errorOut:     os.Stderr,    // 默认错误日志输出到标准错误
+	}
+	// 启动3个初始消费者协程
+	for i := 0; i < 3; i++ {
+		logger.startConsumer()
+	}
+	return logger
+
 }
 
 func (l *asyncContext) Caller(skip int) core.LoggerContext {
