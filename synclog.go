@@ -4,6 +4,7 @@ import (
 	config2 "LogX/config"
 	"LogX/core"
 	"LogX/hooks"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -93,8 +94,9 @@ func (l *syncContext) Info(format string, args ...interface{}) {
 func (l *syncContext) Warn(format string, args ...interface{}) {
 	l.logger.output(config2.WARNING, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *syncContext) Error(format string, args ...interface{}) {
+func (l *syncContext) Error(format string, args ...interface{}) error {
 	l.logger.output(config2.ERROR, fmt.Sprintf(format, args...), l.fields, l.skip)
+	return errors.New(fmt.Sprintf(format, args...))
 }
 func (l *syncContext) Fatal(format string, args ...interface{}) {
 	l.logger.output(config2.FATAL, fmt.Sprintf(format, args...), l.fields, l.skip)
@@ -118,8 +120,8 @@ func (l *SyncLogger) Info(format string, args ...interface{}) {
 func (l *SyncLogger) Warn(format string, args ...interface{}) {
 	l.Field(nil).Warn(format, args...)
 }
-func (l *SyncLogger) Error(format string, args ...interface{}) {
-	l.Field(nil).Error(format, args...)
+func (l *SyncLogger) Error(format string, args ...interface{}) error {
+	return l.Field(nil).Error(format, args...)
 }
 func (l *SyncLogger) Fatal(format string, args ...interface{}) {
 	l.Field(nil).Fatal(format, args...)

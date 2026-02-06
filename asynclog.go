@@ -4,6 +4,7 @@ import (
 	config2 "LogX/config"
 	"LogX/core"
 	"LogX/hooks"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -115,8 +116,9 @@ func (l *asyncContext) Info(format string, args ...interface{}) {
 func (l *asyncContext) Warn(format string, args ...interface{}) {
 	l.logger.output(config2.WARNING, fmt.Sprintf(format, args...), l.fields, l.skip)
 }
-func (l *asyncContext) Error(format string, args ...interface{}) {
+func (l *asyncContext) Error(format string, args ...interface{}) error {
 	l.logger.output(config2.ERROR, fmt.Sprintf(format, args...), l.fields, l.skip)
+	return errors.New(fmt.Sprintf(format, args...))
 }
 func (l *asyncContext) Fatal(format string, args ...interface{}) {
 	l.logger.output(config2.FATAL, fmt.Sprintf(format, args...), l.fields, l.skip)
@@ -133,7 +135,9 @@ func (l *AsyncLogger) Trace(format string, args ...interface{}) { l.Field(nil).T
 func (l *AsyncLogger) Debug(format string, args ...interface{}) { l.Field(nil).Debug(format, args...) }
 func (l *AsyncLogger) Info(format string, args ...interface{})  { l.Field(nil).Info(format, args...) }
 func (l *AsyncLogger) Warn(format string, args ...interface{})  { l.Field(nil).Warn(format, args...) }
-func (l *AsyncLogger) Error(format string, args ...interface{}) { l.Field(nil).Error(format, args...) }
+func (l *AsyncLogger) Error(format string, args ...interface{}) error {
+	return l.Field(nil).Error(format, args...)
+}
 func (l *AsyncLogger) Fatal(format string, args ...interface{}) { l.Field(nil).Fatal(format, args...) }
 func (l *AsyncLogger) Panic(format string, args ...interface{}) { l.Field(nil).Panic(format, args...) }
 
