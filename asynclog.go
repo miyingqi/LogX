@@ -287,7 +287,7 @@ func (l *AsyncLogger) processEntry(entry *core.Entry) {
 		return
 	}
 
-	// 控制台输出：全局锁防护，避免多消费者IO竞争
+	//控制台输出：全局锁防护，避免多消费者IO竞争
 	if l.config.OutputConsole {
 		l.consoleMu.Lock()
 		defer l.consoleMu.Unlock()
